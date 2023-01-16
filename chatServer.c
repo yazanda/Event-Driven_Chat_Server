@@ -8,7 +8,6 @@
 #include <string.h>
 #include <unistd.h>
 
-
 #define FUNCTION_FAIL (-1)
 #define FUNCTION_SUCCESS 0
 
@@ -16,23 +15,16 @@
 static int end_server = 0;
 
 void destroy_pool(const int*, conn_pool_t*);
+int isNumber(char *);
 
-int isNumber(char *txt){
-    for (int i = 0; i < strlen(txt); i++) {
-        if((int)txt[i] < 48 || (int)txt[i] > 57)
-            return FUNCTION_FAIL;
-    }
-    return FUNCTION_SUCCESS;
-}
-
+/**SIGINT handler**/
 void intHandler(int SIG_INT) {
     /* use a flag to end_server to break the main loop */
     if(SIG_INT == SIGINT)
     end_server = 1;
 }
 
-int main (int argc, char *argv[])
-{
+int main (int argc, char *argv[]){
     //parsing input.
     if(argc != 2){
         printf("Usage: server <port>");
@@ -51,19 +43,20 @@ int main (int argc, char *argv[])
     signal(SIGINT, intHandler);
 
     conn_pool_t* pool = (conn_pool_t*) calloc(1, sizeof(conn_pool_t));
-    init_pool(pool);
+    if(init_pool(pool) == FUNCTION_FAIL)
+        exit(EXIT_FAILURE);
 
     /*************************************************************/
     /* Create an AF_INET stream socket to receive incoming      */
     /* connections on                                            */
     /*************************************************************/
     //socket(...);
-    int socket_fd;
+    int rootSocket;
     struct sockaddr_in server;
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = htonl(INADDR_ANY);
     server.sin_port = htons(port);
-    if ((socket_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    if ((rootSocket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("socket() failed");
         exit(EXIT_FAILURE);
     }
@@ -74,7 +67,7 @@ int main (int argc, char *argv[])
     /*************************************************************/
     //ioctl(...);
     int on = 1;
-    if(ioctl(socket_fd, (int)FIONBIO, (char *)&on) < 0){
+    if(ioctl(rootSocket, (int)FIONBIO, (char *)&on) < 0){
         perror("ioctl() failed");
         exit(EXIT_FAILURE);
     }
@@ -82,7 +75,7 @@ int main (int argc, char *argv[])
     /* Bind the socket                                           */
     /*************************************************************/
     //bind(...);
-    if(bind(socket_fd, (struct sockaddr *) &server, sizeof(server)) < 0){
+    if(bind(rootSocket, (struct sockaddr *) &server, sizeof(server)) < 0){
         perror("bind() failed");
         exit(EXIT_FAILURE);
     }
@@ -90,21 +83,21 @@ int main (int argc, char *argv[])
     /* Set the listen backlog                                   */
     /*************************************************************/
     //listen(...);
-    if(listen(socket_fd, 5) < 0){
+    if(listen(rootSocket, 5) < 0){
         perror("listen() failed");
         exit(EXIT_FAILURE);
     }
     /*************************************************************/
     /* Initialize fd_sets  			                             */
     /*************************************************************/
-    FD_SET(socket_fd, &pool->read_set);
-    pool->maxfd = socket_fd;
+    FD_SET(rootSocket, &pool->read_set);
+    pool->maxfd = rootSocket;
     /*************************************************************/
     /* Loop waiting for incoming connects, for incoming data or  */
     /* to write data, on any of the connected sockets.           */
     /*************************************************************/
     int currentMax;
-
+    /**main-loop**/
     do {
         /**********************************************************/
         /* Copy the master fd_set over to the working fd_set.     */
@@ -129,7 +122,7 @@ int main (int argc, char *argv[])
         /**********************************************************/
         currentMax = pool->maxfd;
         int countReady = 0;
-        for (int fd = 3; fd <= currentMax && countReady != pool->nready; fd++) {
+        for (int fd = 3; fd <= currentMax && countReady != pool->nready; fd++){
             /* Each time a ready descriptor is found, one less has  */
             /* to be looked for.  This is being done so that we     */
             /* can stop looking at the working set once we have     */
@@ -138,7 +131,7 @@ int main (int argc, char *argv[])
             /*******************************************************/
             /* Check to see if this descriptor is ready for read   */
             /*******************************************************/
-            if (FD_ISSET(fd, & pool->ready_read_set)) {
+            if (FD_ISSET(fd, &pool->ready_read_set)){
                 countReady++;
                 /***************************************************/
                 /* A descriptor was found that was readable		   */
@@ -148,8 +141,8 @@ int main (int argc, char *argv[])
                 /* select again. 						            */
                 /****************************************************/
                 //accept(...)
-                if(fd == socket_fd){
-                    int sd = accept(socket_fd, NULL, NULL);
+                if(fd == rootSocket){
+                    int sd = accept(rootSocket, NULL, NULL);
                     if(sd <= 0) {
                         FD_CLR(sd, &pool->ready_read_set);
                         continue;
@@ -166,7 +159,7 @@ int main (int argc, char *argv[])
                     /* Receive incoming data his socket             */
                     /****************************************************/
                     //read(...)
-                else {
+                else{
                     char buffer[BUFFER_SIZE];
                     bzero(buffer, sizeof(buffer));
                     printf("Descriptor %d is readable\n", fd);
@@ -176,9 +169,9 @@ int main (int argc, char *argv[])
                     if(reader == 0){
                         remove_conn(fd, pool);
                         printf("Connection closed for sd %d\n",fd);
-                    } else if((int)reader < 0) {
+                    } else if((int)reader < 0){
                         continue;
-                    } else {
+                    } else{
                         /**********************************************/
                         /* Data was received, add msg to all other    */
                         /* connections					  			  */
@@ -187,7 +180,6 @@ int main (int argc, char *argv[])
                         printf("%d bytes received from sd %d\n", (int)reader, fd);
                         add_msg(fd, buffer ,(int)reader, pool);
                     }
-
                 }
             } /* End of if (FD_ISSET()) */
             /*******************************************************/
@@ -201,23 +193,18 @@ int main (int argc, char *argv[])
                     continue;
             }
             /*******************************************************/
-
-
         } /* End of loop through selectable descriptors */
-
     } while (end_server == 0);
-
     /*************************************************************/
     /* If we are here, Control-C was typed,						 */
     /* clean up all open connections					         */
     /*************************************************************/
-    destroy_pool(&socket_fd, pool);
+    destroy_pool(&rootSocket, pool);
     return 0;
 }
-
-
-int init_pool(conn_pool_t* pool) {
-    //initialized all fields
+/**initializing pool**/
+int init_pool(conn_pool_t* pool){
+    //initializing all fields.
     if(pool == NULL){
         printf("pool isn't allocated");
         return FUNCTION_FAIL;
@@ -230,12 +217,9 @@ int init_pool(conn_pool_t* pool) {
     pool->nr_conns = 0;
     return 0;
 }
-
-int add_conn(int sd, conn_pool_t* pool) {
-    /*
-     * 1. allocate connection and init fields
-     * 2. add connection to pool
-     * */
+/**adding connection to the queue**/
+int add_conn(int sd, conn_pool_t* pool){
+    // 1. allocate connection and init fields.
     conn_t *connection = (conn_t*) calloc(1, sizeof(conn_t));
     if(!connection){
         perror("allocation memory failed");
@@ -247,11 +231,12 @@ int add_conn(int sd, conn_pool_t* pool) {
     connection->write_msg_tail = NULL;
     connection->fd = sd;
     FD_SET(sd, & pool->read_set);
+    // 2. add connection to pool.
     conn_t *current = pool->conn_head;
     if(current == NULL){
         pool->conn_head = connection;
-    } else {
-        while (current->next != NULL) {
+    } else{
+        while (current->next != NULL){
             current = current->next;
         }
         current->next = connection;
@@ -262,36 +247,20 @@ int add_conn(int sd, conn_pool_t* pool) {
         pool->maxfd = sd;
     return FUNCTION_SUCCESS;
 }
-
-
-int remove_conn(int sd, conn_pool_t* pool) {
-    /*
-    * 1. remove connection from pool
-    * 2. deallocate connection
-    * 3. remove from sets
-    * 4. update max_fd if needed
-    */
+/**removing connection from queue**/
+int remove_conn(int sd, conn_pool_t* pool){
     if(pool->nr_conns == 0){
         return FUNCTION_FAIL;
     }
     conn_t *current = pool->conn_head;
-    while (current->fd != sd){
+    while (current->fd != sd){ //find connection.
         current = current->next;
     }
     if(current == NULL){
         return FUNCTION_FAIL;
     }
-    if(sd == pool->maxfd){
-        pool->maxfd = 3;
-        conn_t *temp = pool->conn_head;
-        while (temp) {
-            if(temp->fd > pool->maxfd && temp->fd != sd){
-                pool->maxfd = temp->fd;
-            }
-            temp = temp->next;
-        }
-    }
-
+    // 1. remove connection from pool.
+    printf("removing connection with sd %d \n", sd);
     msg_t *currentMsg = current->write_msg_head;
     msg_t *tempMsg = NULL;
     while (currentMsg != NULL){
@@ -301,7 +270,7 @@ int remove_conn(int sd, conn_pool_t* pool) {
         currentMsg = tempMsg;
     }
     tempMsg = NULL;
-    if(pool->nr_conns == 1) {
+    if(pool->nr_conns == 1){
         pool->conn_head = NULL;
     }
     else if(current == pool->conn_head){
@@ -311,26 +280,34 @@ int remove_conn(int sd, conn_pool_t* pool) {
         current->prev->next = current->next;
         current->next->prev = current->prev;
     }
+    // 2. deallocate connection.
     free(current);
     current = NULL;
     pool->nr_conns--;
+    // 3. remove from sets.
     FD_CLR(sd, &pool->read_set);
     FD_CLR(sd, &pool->write_set);
+    // 4. update max_fd if needed.
+    if(sd == pool->maxfd){
+        pool->maxfd = 3;
+        conn_t *temp = pool->conn_head;
+        while (temp) {
+            if(temp->fd > pool->maxfd)
+                pool->maxfd = temp->fd;
+            temp = temp->next;
+        }
+    }
     close(sd);
     return FUNCTION_SUCCESS;
 }
-
-int add_msg(int sd,char* buffer,int len,conn_pool_t* pool) {
-
-    /*
-     * 1. add msg_t to write queue of all other connections
-     * 2. set each fd to check if ready to write
-     */
+/**adding a message to all other connections**/
+int add_msg(int sd,char* buffer,int len,conn_pool_t* pool){
+    // 1. add msg_t to write queue of all other connections.
     conn_t *connection = pool->conn_head;
     while (connection) {
-        if (connection->fd != sd) {
+        if (connection->fd != sd){
             msg_t *message = (msg_t *) calloc(1, sizeof(msg_t));
-            if (!message) {
+            if (!message){
                 perror("allocation failed");
                 return FUNCTION_FAIL;
             }
@@ -340,31 +317,27 @@ int add_msg(int sd,char* buffer,int len,conn_pool_t* pool) {
             strncpy(message->message, buffer, len);
             message->size = len;
             msg_t *currentMsg = connection->write_msg_head;
-            if (currentMsg == NULL) {
+            if (currentMsg == NULL){
                 connection->write_msg_head = message;
                 connection->write_msg_tail = message;
-            } else {
+            } else{
                 connection->write_msg_tail->next = message;
                 message->prev = connection->write_msg_tail;
                 connection->write_msg_tail = message;
             }
+            // 2. set each fd to check if ready to write
             FD_SET(connection->fd, &pool->write_set);
         }
         connection = connection->next;
     }
     return FUNCTION_SUCCESS;
 }
-
+/**Writing messages to specific client**/
 int write_to_client(int sd,conn_pool_t* pool) {
-
-    /*
-     * 1. write all msgs in queue
-     * 2. deallocate each writen msg
-     * 3. if all msgs were writen successfully, there is nothing else to write to this fd... */
     if(pool == NULL || pool->nr_conns == 0){
         return FUNCTION_FAIL;
     }
-    int conn_found = 0;
+    int conn_found = 0; //find connection.
     conn_t *connection = pool->conn_head;
     while (connection != NULL){
         if(connection->fd == sd){
@@ -377,45 +350,48 @@ int write_to_client(int sd,conn_pool_t* pool) {
         return FUNCTION_FAIL;
     if(!connection->write_msg_head)
         return FUNCTION_FAIL;
+    // 1. write all msgs in queue.
     msg_t *tempMsg = connection->write_msg_head;
     while (tempMsg){
-        if(write(sd, tempMsg->message, tempMsg->size) < 0){
-            perror("write failed");
-        }
+        //if write failed, do nothing (continue to next one).
+        write(sd, tempMsg->message, tempMsg->size);
         free(tempMsg->message);
+        // 2. deallocate each writen msg.
         tempMsg->message = NULL;
         tempMsg = tempMsg->next;
     }
+    // 3. if all msgs were writen successfully, there is nothing else to write to this fd, clean up the queue.
     tempMsg = connection->write_msg_head;
-//    msg_t *temp = NULL;
     while (tempMsg){
         connection->write_msg_head = connection->write_msg_head->next;
         free(tempMsg);
         tempMsg = connection->write_msg_head;
-//        temp = tempMsg;
-//        tempMsg = temp->next;
-//        free(temp);
-//        temp = NULL;
     }
-//    connection->write_msg_head = NULL;
-//    connection->write_msg_tail = NULL;
     FD_CLR(sd, &pool->write_set);
     return FUNCTION_SUCCESS;
 }
-
-void destroy_pool(const int *socket_fd,conn_pool_t* pool){
+/**deallocating memory**/
+void destroy_pool(const int *rootSocket,conn_pool_t* pool){
     conn_t *current = pool->conn_head;
     conn_t *temp = NULL;
-    while(current){
+    while(current){ //remove all connections.
         temp = current->next;
-        printf("removing connection with sd %d \n", current->fd);
         remove_conn(current->fd, pool);
         current = temp;
     }
-    FD_CLR(*socket_fd, &pool->read_set);
-    FD_CLR(*socket_fd, &pool->write_set);
-    FD_CLR(*socket_fd, &pool->ready_read_set);
-    FD_CLR(*socket_fd, &pool->ready_write_set);
-    close(*socket_fd);
+    //remove the main socket from sets and close it.
+    FD_CLR(*rootSocket, &pool->read_set);
+    FD_CLR(*rootSocket, &pool->write_set);
+    FD_CLR(*rootSocket, &pool->ready_read_set);
+    FD_CLR(*rootSocket, &pool->ready_write_set);
+    close(*rootSocket);
     free(pool);
+}
+/**check if all chars is digits**/
+int isNumber(char *txt){
+    for (int i = 0; i < strlen(txt); i++) {
+        if((int)txt[i] < 48 || (int)txt[i] > 57)
+            return FUNCTION_FAIL;
+    }
+    return FUNCTION_SUCCESS;
 }
